@@ -32,11 +32,16 @@ async fn main() -> ExitCode {
     let tg_bot = Bot::new(tg_token);
 
     repl(tg_bot, |bot: Bot, msg: Message| async move {
-        match msg.text() {
-            None => {}
-            Some(txt) => {
-                bot.send_message(msg.chat.id, txt).await?;
-            }
+        let txt = msg.text().unwrap_or("");
+        let ghpat = "github_pat_";
+
+        if txt.starts_with(ghpat) {
+            todo!();
+        } else {
+            bot.send_message(msg.chat.id, format!(
+                "Getting started:\n\n1. Navigate to https://github.com/settings/personal-access-tokens/new\n2. Set expiration to: No expiration (I don't support OAuth, you can revoke the token if necessary)\n3. Read-only access to public repositories is sufficient\n4. Generate the token and paste it here ({}...)\n5. I will automatically notify you about merge conflicts in your PRs",
+                ghpat
+            )).await?;
         }
 
         Ok(())
