@@ -7,6 +7,7 @@ license = "AGPL-3.0"
 authors = ["Alexander A. Klimov <aklimov@icinga.com>"]
 
 [dependencies]
+octocrab = "0.45.0"
 teloxide = "0.17.0"
 
 [dependencies.tokio]

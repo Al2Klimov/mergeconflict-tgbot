@@ -1,3 +1,4 @@
+use octocrab::Octocrab;
 use std::env::var_os;
 use std::process::ExitCode;
 use teloxide::prelude::Requester;
@@ -36,7 +37,16 @@ async fn main() -> ExitCode {
         let ghpat = "github_pat_";
 
         if txt.starts_with(ghpat) {
-            todo!();
+            let github = Octocrab::builder().personal_token(txt).build().unwrap();
+
+            match github.current().user().await {
+                Err(_) => {
+                    bot.send_message(msg.chat.id, "Invalid token").await?;
+                }
+                Ok(user) => {
+                    bot.send_message(msg.chat.id, format!("Connected to GitHub as {}", user.login)).await?;
+                }
+            }
         } else {
             bot.send_message(msg.chat.id, format!(
                 "Getting started:\n\n1. Navigate to https://github.com/settings/personal-access-tokens/new\n2. Set expiration to: No expiration (I don't support OAuth, you can revoke the token if necessary)\n3. Read-only access to public repositories is sufficient\n4. Generate the token and paste it here ({}...)\n5. I will automatically notify you about merge conflicts in your PRs",
