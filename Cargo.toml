@@ -5,3 +5,10 @@ edition = "2024"
 rust-version = "1.86.0"
 license = "AGPL-3.0"
 authors = ["Alexander A. Klimov <aklimov@icinga.com>"]
+
+[dependencies]
+teloxide = "0.17.0"
+
+[dependencies.tokio]
+version = "1.47.1"
+features = ["macros"]
