@@ -1,6 +1,7 @@
 use octocrab::Octocrab;
 use std::env::var_os;
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
 use teloxide::prelude::Requester;
 use teloxide::types::Message;
 use teloxide::{Bot, repl};
@@ -30,17 +31,95 @@ async fn main() -> ExitCode {
         }
     };
 
+    let dbname = "mergeconflict-tgbot.sqlite";
+
+    let db = match sqlite::open(dbname) {
+        Err(err) => {
+            eprintln!("Failed to open database {}: {}", dbname, err);
+            return ExitCode::FAILURE;
+        }
+        Ok(conn) => conn,
+    };
+
+    match db.execute(
+        "
+CREATE TABLE IF NOT EXISTS chat (
+    id INTEGER PRIMARY KEY,
+    ghpat TEXT NOT NULL
+);
+",
+    ) {
+        Err(err) => {
+            eprintln!("Failed to initialize database: {}", err);
+            return ExitCode::FAILURE;
+        }
+        Ok(_) => {}
+    }
+
+    let db = Arc::new(Mutex::new(db));
     let tg_bot = Bot::new(tg_token);
 
-    repl(tg_bot, |bot: Bot, msg: Message| async move {
-        let txt = msg.text().unwrap_or("");
-        let ghpat = "github_pat_";
+    repl(tg_bot, move |bot: Bot, msg: Message| {
+        let db = Arc::clone(&db);
+        async move {
+            let txt = msg.text().unwrap_or("");
+            let ghpat = "github_pat_";
 
-        if txt.starts_with(ghpat) {
-            match Octocrab::builder().personal_token(txt).build() {
-                Err(err) => {
-                    eprintln!("octocrab error: {}", err);
+            if txt.starts_with(ghpat) {
+                let mut int_err = false;
 
+                match Octocrab::builder().personal_token(txt).build() {
+                    Err(err) => {
+                        eprintln!("octocrab error: {}", err);
+                        int_err = true;
+                    }
+                    Ok(github) => match github.current().user().await {
+                        Err(err) => {
+                            eprintln!("octocrab error: {}", err);
+
+                            match bot.send_message(msg.chat.id, "Invalid token").await {
+                                Err(err) => {
+                                    eprintln!("teloxide error: {}", err);
+                                }
+                                Ok(_) => {}
+                            }
+                        }
+                        Ok(user) => {
+                            match db
+                                .lock()
+                                .unwrap()
+                                .prepare("REPLACE INTO chat(id, ghpat) VALUES (?, ?)")
+                                .and_then(|mut stmt| {
+                                    stmt.bind((1, msg.chat.id.0))
+                                        .and_then(|_| stmt.bind((2, txt)))
+                                        .and_then(|_| stmt.next())
+                                }) {
+                                Err(err) => {
+                                    eprintln!("sqlite error: {}", err);
+                                    int_err = true;
+                                }
+                                Ok(_) => {}
+                            }
+
+                            if !int_err {
+                                match bot
+                                    .send_message(
+                                        msg.chat.id,
+                                        format!("Connected to GitHub as {}", user.login),
+                                    )
+                                    .await
+                                {
+                                    Err(err) => {
+                                        eprintln!("teloxide error: {}", err);
+                                    }
+                                    Ok(_) => {}
+                                }
+                            }
+                        }
+                    },
+                }
+
+                if int_err {
                     match bot.send_message(msg.chat.id, "Internal error").await {
                         Err(err) => {
                             eprintln!("teloxide error: {}", err);
@@ -48,58 +127,32 @@ async fn main() -> ExitCode {
                         Ok(_) => {}
                     }
                 }
-                Ok(github) => match github.current().user().await {
-                    Err(err) => {
-                        eprintln!("octocrab error: {}", err);
-
-                        match bot.send_message(msg.chat.id, "Invalid token").await {
-                            Err(err) => {
-                                eprintln!("teloxide error: {}", err);
-                            }
-                            Ok(_) => {}
-                        }
-                    }
-                    Ok(user) => {
-                        match bot
-                            .send_message(
-                                msg.chat.id,
-                                format!("Connected to GitHub as {}", user.login),
-                            )
-                            .await
-                        {
-                            Err(err) => {
-                                eprintln!("teloxide error: {}", err);
-                            }
-                            Ok(_) => {}
-                        }
-                    }
-                },
-            }
-        } else {
-            match bot
-                .send_message(
-                    msg.chat.id,
-                    format!(
-                        "Getting started:
+            } else {
+                match bot
+                    .send_message(
+                        msg.chat.id,
+                        format!(
+                            "Getting started:
 
 1. Navigate to https://github.com/settings/personal-access-tokens/new
 2. Set expiration: not greater than 366 days
 3. Read-only access to public repositories is sufficient
 4. Generate the token and paste it here ({}...)
 5. I will automatically notify you about merge conflicts in your PRs",
-                        ghpat
-                    ),
-                )
-                .await
-            {
-                Err(err) => {
-                    eprintln!("teloxide error: {}", err);
+                            ghpat
+                        ),
+                    )
+                    .await
+                {
+                    Err(err) => {
+                        eprintln!("teloxide error: {}", err);
+                    }
+                    Ok(_) => {}
                 }
-                Ok(_) => {}
             }
-        }
 
-        Ok(())
+            Ok(())
+        }
     })
     .await;
 

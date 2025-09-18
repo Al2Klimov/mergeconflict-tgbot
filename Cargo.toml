@@ -8,6 +8,7 @@ authors = ["Alexander A. Klimov <aklimov@icinga.com>"]
 
 [dependencies]
 octocrab = "0.45.0"
+sqlite = "0.37.0"
 teloxide = "0.17.0"
 
 [dependencies.tokio]
