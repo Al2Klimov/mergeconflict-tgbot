@@ -1,4 +1,9 @@
+mod graphql;
+
+use crate::graphql::{Mergeable, Root};
 use octocrab::Octocrab;
+use serde_json::json;
+use std::collections::BTreeMap;
 use std::env::var_os;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
@@ -51,6 +56,14 @@ CREATE TABLE IF NOT EXISTS chat (
     ghpat TEXT NOT NULL,
     last_scan INTEGER NOT NULL DEFAULT -1
 );
+
+CREATE TABLE IF NOT EXISTS conflict_pr (
+    chat_id INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    title TEXT NOT NULL,
+
+    PRIMARY KEY (chat_id, url)
+);
 ",
     ) {
         Err(err) => {
@@ -70,7 +83,7 @@ CREATE TABLE IF NOT EXISTS chat (
             loop {
                 let mut due = vec![];
 
-                match db.lock().unwrap().prepare("SELECT id, ghpat FROM chat WHERE last_scan < unixepoch() - 2 ORDER BY last_scan LIMIT 69") {
+                match db.lock().unwrap().prepare("SELECT id, ghpat FROM chat WHERE last_scan < unixepoch() - 3600 ORDER BY last_scan LIMIT 69") {
                     Err(err) => {
                         eprintln!("sqlite error: {}", err);
                     }
@@ -130,7 +143,138 @@ CREATE TABLE IF NOT EXISTS chat (
                                 }
                             }
                             Ok(user) => {
-                                // TODO
+                                let mut conflict_prs = BTreeMap::new();
+                                let mut has_err = false;
+
+                                match db
+                                    .lock()
+                                    .unwrap()
+                                    .prepare("SELECT url, title FROM conflict_pr WHERE chat_id = ?")
+                                {
+                                    Err(err) => {
+                                        eprintln!("sqlite error: {}", err);
+                                        has_err = true;
+                                    }
+                                    Ok(mut query) => match query.bind((1, id)) {
+                                        Err(err) => {
+                                            eprintln!("sqlite error: {}", err);
+                                            has_err = true;
+                                        }
+                                        Ok(_) => {
+                                            for row in query {
+                                                match row {
+                                                    Err(err) => {
+                                                        eprintln!("sqlite error: {}", err);
+                                                        has_err = true;
+                                                    }
+                                                    Ok(row) => {
+                                                        conflict_prs.insert(
+                                                            row.read::<&str, _>("url").to_owned(),
+                                                            row.read::<&str, _>("title").to_owned(),
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                };
+
+                                if !has_err {
+                                    let mut cursor = None;
+
+                                    loop {
+                                        match github.graphql::<Root>(&json!({
+                                            "query": "query($cursor: String) { viewer { pullRequests(after: $cursor, first: 100, states: OPEN) { pageInfo { hasNextPage endCursor } nodes { url mergeable title } } } }",
+                                            "variables": {"cursor": cursor}
+                                        })).await {
+                                            Err(err) => {
+                                                eprintln!("octocrab error: {}", err);
+                                                break;
+                                            }
+                                            Ok(resp) => {
+                                                let prs = resp.data.viewer.pull_requests;
+
+                                                for node in prs.nodes {
+                                                    match node.mergeable {
+                                                        Mergeable::UNKNOWN => {}
+                                                        Mergeable::MERGEABLE => match conflict_prs.remove(node.url.as_str()) {
+                                                            None => {}
+                                                            Some(_) => {
+                                                                match tg_bot
+                                                                    .send_message(
+                                                                        ChatId(id),
+                                                                        format!("Merge conflict resolved:\n\n{}\n\n{}", node.title, node.url),
+                                                                    )
+                                                                    .await
+                                                                {
+                                                                    Err(err) => {
+                                                                        eprintln!("teloxide error: {}", err);
+                                                                    }
+                                                                    Ok(_) => match db
+                                                                        .lock()
+                                                                        .unwrap()
+                                                                        .prepare("DELETE FROM conflict_pr WHERE chat_id = ? AND url = ?")
+                                                                        .and_then(|mut stmt| {
+                                                                            stmt.bind((1, id))
+                                                                                .and_then(|_| stmt.bind((2, node.url.as_str())))
+                                                                                .and_then(|_| stmt.next())
+                                                                        }) {
+                                                                        Err(err) => {
+                                                                            eprintln!("sqlite error: {}", err);
+                                                                        }
+                                                                        Ok(_) => {}
+                                                                    }
+                                                                }
+
+                                                                sleep(Duration::from_secs(1)).await;
+                                                            }                                                        }
+                                                        Mergeable::CONFLICTING => match conflict_prs.insert(node.url.clone(), node.title.clone()) {
+                                                            Some(_) => {}
+                                                            None => {
+                                                                match tg_bot
+                                                                    .send_message(
+                                                                        ChatId(id),
+                                                                        format!("New merge conflict:\n\n{}\n\n{}", node.title, node.url),
+                                                                    )
+                                                                    .await
+                                                                {
+                                                                    Err(err) => {
+                                                                        eprintln!("teloxide error: {}", err);
+                                                                    }
+                                                                    Ok(_) => match db
+                                                                        .lock()
+                                                                        .unwrap()
+                                                                        .prepare("REPLACE INTO conflict_pr(chat_id, url, title) VALUES (?, ?, ?)")
+                                                                        .and_then(|mut stmt| {
+                                                                            stmt.bind((1, id))
+                                                                                .and_then(|_| stmt.bind((2, node.url.as_str())))
+                                                                                .and_then(|_| stmt.bind((3, node.title.as_str())))
+                                                                                .and_then(|_| stmt.next())
+                                                                        }) {
+                                                                        Err(err) => {
+                                                                            eprintln!("sqlite error: {}", err);
+                                                                        }
+                                                                        Ok(_) => {}
+                                                                    }
+                                                                }
+
+                                                                sleep(Duration::from_secs(1)).await;
+                                                            }                                                        }
+                                                    }
+                                                }
+
+                                                cursor = prs.page_info.end_cursor;
+
+                                                if !prs.page_info.has_next_page || cursor.is_none() {
+                                                    break;
+                                                }
+
+                                                sleep(Duration::from_secs(1)).await;
+                                            }
+                                        }
+                                    }
+                                }
+
                                 eprintln!("Scanned {}", user.login);
 
                                 match db

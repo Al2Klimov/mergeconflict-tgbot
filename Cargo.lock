@@ -903,6 +903,8 @@ name = "mergeconflict-tgbot"
 version = "0.1.0"
 dependencies = [
  "octocrab",
+ "serde",
+ "serde_json",
  "sqlite",
  "teloxide",
  "tokio",
