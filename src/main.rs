@@ -38,25 +38,45 @@ async fn main() -> ExitCode {
 
         if txt.starts_with(ghpat) {
             match Octocrab::builder().personal_token(txt).build() {
-                Err(_) => {
-                    let _ = bot.send_message(msg.chat.id, "Internal error").await;
+                Err(err) => {
+                    eprintln!("octocrab error: {}", err);
+
+                    match bot.send_message(msg.chat.id, "Internal error").await {
+                        Err(err) => {
+                            eprintln!("teloxide error: {}", err);
+                        }
+                        Ok(_) => {}
+                    }
                 }
                 Ok(github) => match github.current().user().await {
-                    Err(_) => {
-                        let _ = bot.send_message(msg.chat.id, "Invalid token").await;
+                    Err(err) => {
+                        eprintln!("octocrab error: {}", err);
+
+                        match bot.send_message(msg.chat.id, "Invalid token").await {
+                            Err(err) => {
+                                eprintln!("teloxide error: {}", err);
+                            }
+                            Ok(_) => {}
+                        }
                     }
                     Ok(user) => {
-                        let _ = bot
+                        match bot
                             .send_message(
                                 msg.chat.id,
                                 format!("Connected to GitHub as {}", user.login),
                             )
-                            .await;
+                            .await
+                        {
+                            Err(err) => {
+                                eprintln!("teloxide error: {}", err);
+                            }
+                            Ok(_) => {}
+                        }
                     }
                 },
             }
         } else {
-            let _ = bot
+            match bot
                 .send_message(
                     msg.chat.id,
                     format!(
@@ -70,7 +90,13 @@ async fn main() -> ExitCode {
                         ghpat
                     ),
                 )
-                .await;
+                .await
+            {
+                Err(err) => {
+                    eprintln!("teloxide error: {}", err);
+                }
+                Ok(_) => {}
+            }
         }
 
         Ok(())
