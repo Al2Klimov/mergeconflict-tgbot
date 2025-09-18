@@ -2,9 +2,12 @@ use octocrab::Octocrab;
 use std::env::var_os;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use teloxide::prelude::Requester;
-use teloxide::types::Message;
+use teloxide::types::{ChatId, Message};
 use teloxide::{Bot, repl};
+use tokio::spawn;
+use tokio::time::sleep;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -45,7 +48,8 @@ async fn main() -> ExitCode {
         "
 CREATE TABLE IF NOT EXISTS chat (
     id INTEGER PRIMARY KEY,
-    ghpat TEXT NOT NULL
+    ghpat TEXT NOT NULL,
+    last_scan INTEGER NOT NULL DEFAULT -1
 );
 ",
     ) {
@@ -58,6 +62,98 @@ CREATE TABLE IF NOT EXISTS chat (
 
     let db = Arc::new(Mutex::new(db));
     let tg_bot = Bot::new(tg_token);
+
+    spawn({
+        let db = Arc::clone(&db);
+        let tg_bot = tg_bot.clone();
+        async move {
+            loop {
+                let mut due = vec![];
+
+                match db.lock().unwrap().prepare("SELECT id, ghpat FROM chat WHERE last_scan < unixepoch() - 2 ORDER BY last_scan LIMIT 69") {
+                    Err(err) => {
+                        eprintln!("sqlite error: {}", err);
+                    }
+                    Ok(query) => {
+                        for row in query {
+                            match row {
+                                Err(err) => {
+                                    eprintln!("sqlite error: {}", err);
+                                    due.clear();
+                                }
+                                Ok(row) => {
+                                    due.push((row.read::<i64,_>("id"), row.read::<&str,_>("ghpat").to_owned()));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for (id, ghpat) in due {
+                    match Octocrab::builder().personal_token(ghpat).build() {
+                        Err(err) => {
+                            eprintln!("octocrab error: {}", err);
+                        }
+                        Ok(github) => match github.current().user().await {
+                            Err(err) => {
+                                eprintln!("octocrab error: {}", err);
+
+                                match tg_bot
+                                    .send_message(
+                                        ChatId(id),
+                                        "Your token expired, please provide a new one",
+                                    )
+                                    .await
+                                {
+                                    Err(err) => {
+                                        eprintln!("teloxide error: {}", err);
+
+                                        match db.lock().unwrap().prepare("UPDATE chat SET last_scan = unixepoch() WHERE id = ?").and_then(|mut stmt| stmt.bind((1, id)).and_then(|_| stmt.next())) {
+                                            Err(err) => {
+                                                eprintln!("sqlite error: {}", err);
+                                            }
+                                            Ok(_) => {}
+                                        }
+                                    }
+                                    Ok(_) => match db
+                                        .lock()
+                                        .unwrap()
+                                        .prepare("DELETE FROM chat WHERE id = ?")
+                                        .and_then(|mut stmt| {
+                                            stmt.bind((1, id)).and_then(|_| stmt.next())
+                                        }) {
+                                        Err(err) => {
+                                            eprintln!("sqlite error: {}", err);
+                                        }
+                                        Ok(_) => {}
+                                    },
+                                }
+                            }
+                            Ok(user) => {
+                                // TODO
+                                eprintln!("Scanned {}", user.login);
+
+                                match db
+                                    .lock()
+                                    .unwrap()
+                                    .prepare("UPDATE chat SET last_scan = unixepoch() WHERE id = ?")
+                                    .and_then(|mut stmt| {
+                                        stmt.bind((1, id)).and_then(|_| stmt.next())
+                                    }) {
+                                    Err(err) => {
+                                        eprintln!("sqlite error: {}", err);
+                                    }
+                                    Ok(_) => {}
+                                }
+                            }
+                        },
+                    }
+                }
+
+                sleep(Duration::from_secs(1)).await;
+            }
+        }
+    });
 
     repl(tg_bot, move |bot: Bot, msg: Message| {
         let db = Arc::clone(&db);
