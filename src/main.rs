@@ -37,21 +37,24 @@ async fn main() -> ExitCode {
         let ghpat = "github_pat_";
 
         if txt.starts_with(ghpat) {
-            let github = Octocrab::builder().personal_token(txt).build().unwrap();
-
-            match github.current().user().await {
+            match Octocrab::builder().personal_token(txt).build() {
                 Err(_) => {
-                    bot.send_message(msg.chat.id, "Invalid token").await?;
+                    let _ = bot.send_message(msg.chat.id, "Internal error").await;
                 }
-                Ok(user) => {
-                    bot.send_message(msg.chat.id, format!("Connected to GitHub as {}", user.login)).await?;
+                Ok(github) => match github.current().user().await {
+                    Err(_) => {
+                        let _ = bot.send_message(msg.chat.id, "Invalid token").await;
+                    }
+                    Ok(user) => {
+                        let _ = bot.send_message(msg.chat.id, format!("Connected to GitHub as {}", user.login)).await;
+                    }
                 }
             }
         } else {
-            bot.send_message(msg.chat.id, format!(
+            let _ = bot.send_message(msg.chat.id, format!(
                 "Getting started:\n\n1. Navigate to https://github.com/settings/personal-access-tokens/new\n2. Set expiration: not greater than 366 days\n3. Read-only access to public repositories is sufficient\n4. Generate the token and paste it here ({}...)\n5. I will automatically notify you about merge conflicts in your PRs",
                 ghpat
-            )).await?;
+            )).await;
         }
 
         Ok(())
