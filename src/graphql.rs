@@ -1,11 +1,6 @@
 use serde::Deserialize;
 
 #[derive(Deserialize)]
-pub(crate) struct Root {
-    pub(crate) data: Data,
-}
-
-#[derive(Deserialize)]
 pub(crate) struct Data {
     pub(crate) viewer: Viewer,
 }

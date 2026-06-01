@@ -1,6 +1,6 @@
 mod graphql;
 
-use crate::graphql::{Mergeable, Root};
+use crate::graphql::{Data, Mergeable};
 use octocrab::Octocrab;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS conflict_pr (
                                     let mut cursor = None;
 
                                     loop {
-                                        match github.graphql::<Root>(&json!({
+                                        match github.graphql::<Data>(&json!({
                                             "query": "query($cursor: String) { viewer { pullRequests(after: $cursor, first: 100, states: OPEN) { pageInfo { hasNextPage endCursor } nodes { url mergeable title } } } }",
                                             "variables": {"cursor": cursor}
                                         })).await {
@@ -192,7 +192,7 @@ CREATE TABLE IF NOT EXISTS conflict_pr (
                                                 break;
                                             }
                                             Ok(resp) => {
-                                                let prs = resp.data.viewer.pull_requests;
+                                                let prs = resp.viewer.pull_requests;
 
                                                 for node in prs.nodes {
                                                     match node.mergeable {
